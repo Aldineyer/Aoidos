@@ -106,35 +106,43 @@ Before running the tool, ensure you have the following:
    cd gutenberg-storyteller
    ```
 
-2. **Create and activate a virtual environment (recommended):**
+2. **Install [uv](https://docs.astral.sh/uv/) (if not already installed):**
 
    ```bash
-   python -m venv venv
-   source venv/bin/activate      # Linux / macOS
-   venv\Scripts\activate          # Windows
+   # Linux / macOS
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+
+   # Windows (PowerShell)
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
    ```
 
 3. **Install Python dependencies:**
 
    ```bash
-   pip install google-genai requests pydub
+   uv sync
    ```
+
+   This creates a `.venv/` directory and installs all dependencies listed in `pyproject.toml`.
 
 ---
 
 ## Configuration
 
-Set your Gemini API key as an environment variable:
+1. **Copy the example environment file:**
 
-```bash
-# Linux / macOS
-export GEMINI_API_KEY="your_api_key_here"
+   ```bash
+   cp .env.example .env
+   ```
 
-# Windows (PowerShell)
-$env:GEMINI_API_KEY="your_api_key_here"
-```
+2. **Edit `.env` and add your Gemini API key:**
 
-> **Tip:** Add the export line to your shell profile (`.bashrc`, `.zshrc`, or PowerShell profile) to avoid setting it manually each session.
+   ```env
+   GEMINI_API_KEY=your_api_key_here
+   ```
+
+   The `.env` file is loaded automatically at runtime via `python-dotenv`.
+
+> **Tip:** Never commit your `.env` file to version control. It is listed in `.gitignore` by default.
 
 ---
 
@@ -287,9 +295,12 @@ import os
 import re
 import time
 import requests
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from pydub import AudioSegment
+
+load_dotenv()
 
 
 def fetch_and_clean_gutenberg(url: str) -> str:
@@ -468,7 +479,7 @@ The tool includes a `time.sleep(1)` between API calls to respect rate limits. Fo
 
 | Problem | Solution |
 |---------|----------|
-| `ModuleNotFoundError: No module named 'google.genai'` | Run `pip install google-genai` |
+| `ModuleNotFoundError: No module named 'google.genai'` | Run `uv add google-genai` |
 | `FileNotFoundError: ffmpeg` | Install FFmpeg (see [Prerequisites](#prerequisites)) |
 | `PermissionError` or `401 Unauthorized` from Gemini API | Verify `GEMINI_API_KEY` is set correctly |
 | Audio is silent or distorted | Check that the chunk size is within API limits; reduce `max_chars` |
