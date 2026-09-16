@@ -5,6 +5,8 @@ using the Gemini API (gemini-2.5-flash with audio/mp3 output).
 
 Usage:
     python narrator.py --url "https://www.gutenberg.org/files/11/11-0.txt" --output "alice.mp3"
+    python narrator.py --file "assets/default_book.txt" --output "cthulhu.mp3"
+    python narrator.py --output "default.mp3"  # uses assets/default_book.txt
 """
 
 import argparse
@@ -39,6 +41,25 @@ GUTENBERG_END_RE = re.compile(
 )
 
 
+def clean_gutenberg_text(text: str) -> str:
+    """
+    Strip Project Gutenberg standardized metadata headers/footers.
+
+    Args:
+        text: Raw ebook text that may contain START/END markers.
+
+    Returns:
+        Cleaned book text between the START and END markers.
+    """
+    start_match = GUTENBERG_START_RE.search(text)
+    end_match = GUTENBERG_END_RE.search(text)
+
+    if start_match and end_match:
+        text = text[start_match.end():end_match.start()]
+
+    return text.strip()
+
+
 def fetch_text(url: str) -> str:
     """
     Download a Project Gutenberg ebook and strip standardized metadata
@@ -52,15 +73,23 @@ def fetch_text(url: str) -> str:
     """
     response = requests.get(url)
     response.raise_for_status()
-    text = response.text
+    return clean_gutenberg_text(response.text)
 
-    start_match = GUTENBERG_START_RE.search(text)
-    end_match = GUTENBERG_END_RE.search(text)
 
-    if start_match and end_match:
-        text = text[start_match.end():end_match.start()]
+def fetch_text_from_file(file_path: str) -> str:
+    """
+    Read a local text file and strip Project Gutenberg metadata
+    headers/footers.
 
-    return text.strip()
+    Args:
+        file_path: Path to a local .txt file.
+
+    Returns:
+        Cleaned book text between the START and END markers.
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    return clean_gutenberg_text(text)
 
 
 def chunk_text(text: str, max_chars: int = 2000) -> list[str]:
@@ -124,22 +153,35 @@ def synthesize_audio(chunk: str, client: genai.Client) -> bytes:
 
 
 def build_audiobook(
-    gutenberg_url: str,
+    gutenberg_url: str | None = None,
+    book_file: str | None = None,
     output_filename: str = "audiobook.mp3",
     max_chars: int = 2000,
 ) -> None:
     """
     Convert a Project Gutenberg ebook into a narrated audiobook.
 
+    Either *gutenberg_url* or *book_file* may be specified.  If neither is
+    given, the default book at ``assets/default_book.txt`` is used.
+
     Args:
         gutenberg_url: URL to the raw .txt file on Project Gutenberg.
+        book_file: Path to a local .txt file to narrate.
         output_filename: Name of the output MP3 file.
         max_chars: Maximum characters per text chunk.
     """
     client = genai.Client()
 
-    print("Downloading book content...")
-    book_text = fetch_text(gutenberg_url)
+    if gutenberg_url:
+        print("Downloading book content...")
+        book_text = fetch_text(gutenberg_url)
+    elif book_file:
+        print(f"Reading book from file: {book_file}...")
+        book_text = fetch_text_from_file(book_file)
+    else:
+        default_file = "assets/default_book.txt"
+        print(f"No source specified, using default file: {default_file}...")
+        book_text = fetch_text_from_file(default_file)
 
     chunks = chunk_text(book_text, max_chars=max_chars)
     print(f"Split text into {len(chunks)} chunks.")
@@ -170,10 +212,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert a Project Gutenberg ebook into a narrated MP3 audiobook."
     )
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument(
         "--url",
-        required=True,
         help="URL to the raw .txt file on Project Gutenberg.",
+    )
+    source_group.add_argument(
+        "--file",
+        help="Path to a local .txt file to narrate.",
     )
     parser.add_argument(
         "--output",
@@ -191,6 +237,7 @@ def main() -> None:
 
     build_audiobook(
         gutenberg_url=args.url,
+        book_file=args.file,
         output_filename=args.output,
         max_chars=args.max_chars,
     )

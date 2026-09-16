@@ -34,7 +34,7 @@ The tool implements a **four-stage pipeline**:
 
 | Stage | Description |
 |-------|-------------|
-| **1. Fetch & Clean** | Downloads the raw `.txt` file from a Project Gutenberg URL and strips standardized metadata headers/footers. |
+| **1. Fetch & Clean** | Downloads the raw `.txt` file from a Project Gutenberg URL **or** reads a local `.txt` file, then strips standardized metadata headers/footers. |
 | **2. Chunk** | Splits the cleaned text along paragraph boundaries into segments of ~1,500–2,500 characters to stay within API token limits. |
 | **3. Synthesize** | Sends each chunk to the Gemini API (`gemini-2.5-flash`) with a narrator-style prompt and retrieves MP3 audio. |
 | **4. Stitch** | Concatenates all audio segments sequentially into a single output file using `pydub`. |
@@ -45,18 +45,20 @@ The tool implements a **four-stage pipeline**:
 
 ```mermaid
 flowchart LR
-    A[Project Gutenberg URL] -->|HTTP GET| B[Fetch & Clean Text]
+    A1[Project Gutenberg URL] -->|HTTP GET| B[Fetch & Clean Text]
+    A2[Local .txt File] -->|File Read| B
     B -->|Strip START/END markers| C[Chunk by Paragraph]
     C -->|~2000 chars each| D[Synthesize via Gemini API]
     D -->|audio/mp3 per chunk| E[Stitch with pydub + ffmpeg]
     E --> F[Final Audiobook .mp3]
 
     subgraph "External Services"
-        A
+        A1
         D
     end
 
     subgraph "Local Processing"
+        A2
         B
         C
         E
@@ -153,11 +155,20 @@ Before running the tool, ensure you have the following:
 ```python
 from gutenberg_storyteller import build_audiobook
 
-# Generate an audiobook from "Alice's Adventures in Wonderland"
+# Generate an audiobook from a Project Gutenberg URL
 build_audiobook(
     gutenberg_url="https://www.gutenberg.org/files/11/11-0.txt",
     output_filename="alice_in_wonderland.mp3"
 )
+
+# Generate an audiobook from a local text file
+build_audiobook(
+    book_file="assets/default_book.txt",
+    output_filename="cthulhu.mp3"
+)
+
+# No source specified — uses assets/default_book.txt
+build_audiobook(output_filename="default.mp3")
 ```
 
 ### Customizing Chunk Size
@@ -174,12 +185,23 @@ build_audiobook(
 
 ### Command-Line Usage
 
-You can also run the script directly from the command line:
+You can also run the script directly from the command line.  Either `--url` or
+`--file` may be specified, but not both.  If neither is given, the default book
+at `assets/default_book.txt` is used.
 
 ```bash
-python gutenberg_storyteller.py \
+# From a Project Gutenberg URL
+python narrator.py \
     --url "https://www.gutenberg.org/files/11/11-0.txt" \
     --output "alice_in_wonderland.mp3"
+
+# From a local text file
+python narrator.py \
+    --file "assets/default_book.txt" \
+    --output "cthulhu.mp3"
+
+# No source specified — uses assets/default_book.txt
+python narrator.py --output "default.mp3"
 ```
 
 ---
@@ -188,7 +210,7 @@ python gutenberg_storyteller.py \
 
 ### 1. Fetch & Clean Text
 
-The `fetch_and_clean_gutenberg()` function downloads the raw text file from a Project Gutenberg URL and removes the standardized metadata blocks:
+The `fetch_and_clean_gutenberg()` function downloads the raw text file from a Project Gutenberg URL **or** reads a local `.txt` file, then removes the standardized metadata blocks:
 
 - **Start marker:** `*** START OF THIS PROJECT GUTENBERG EBOOK <title> ***`
 - **End marker:** `*** END OF THIS PROJECT GUTENBERG EBOOK <title> ***`
@@ -348,21 +370,37 @@ def chunk_text_by_paragraph(text: str, max_chars: int = 2000) -> list[str]:
 
 
 def build_audiobook(
-    gutenberg_url: str,
+    gutenberg_url: str | None = None,
+    book_file: str | None = None,
     output_filename: str = "audiobook.mp3",
     max_chars: int = 2000
 ):
     """
     Convert a Project Gutenberg ebook into a narrated audiobook.
 
+    Either *gutenberg_url* or *book_file* may be specified.  If neither is
+    given, the default book at ``assets/default_book.txt`` is used.
+
     Args:
         gutenberg_url: URL to the raw .txt file on Project Gutenberg.
+        book_file: Path to a local .txt file to narrate.
         output_filename: Name of the output MP3 file.
         max_chars: Maximum characters per text chunk.
     """
     client = genai.Client()
-    print("Downloading book content...")
-    book_text = fetch_and_clean_gutenberg(gutenberg_url)
+
+    if gutenberg_url:
+        print("Downloading book content...")
+        book_text = fetch_and_clean_gutenberg(gutenberg_url)
+    elif book_file:
+        print(f"Reading book from file: {book_file}...")
+        with open(book_file, "r", encoding="utf-8") as f:
+            book_text = f.read()
+    else:
+        default_file = "assets/default_book.txt"
+        print(f"No source specified, using default file: {default_file}...")
+        with open(default_file, "r", encoding="utf-8") as f:
+            book_text = f.read()
 
     chunks = chunk_text_by_paragraph(book_text, max_chars=max_chars)
     print(f"Split text into {len(chunks)} chunks.")
