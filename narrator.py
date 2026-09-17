@@ -21,7 +21,7 @@ from google import genai
 from google.genai import types
 from pydub import AudioSegment
 
-# Load environment variables (.env) for GEMINI_API_KEY
+# Load environment variables from .env
 load_dotenv()
 
 # Narrator system prompt guiding tone and delivery
@@ -138,7 +138,7 @@ def synthesize_audio(chunk: str, client: genai.Client) -> bytes:
     prompt = NARRATOR_PROMPT + chunk
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="audio/mp3"
