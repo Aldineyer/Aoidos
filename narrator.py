@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 narrator.py — Convert a Project Gutenberg ebook into a narrated MP3 audiobook
-using the Gemini API (gemini-2.5-flash with audio/mp3 output).
+using the Gemini API (gemini-3.8-flash with response_modalities=["AUDIO"] output).
 
 Usage:
     python narrator.py --url "https://www.gutenberg.org/files/11/11-0.txt" --output "alice.mp3"
@@ -10,16 +10,18 @@ Usage:
 """
 
 import argparse
-import os
+import base64
+import binascii
+import logging
 import re
-import tempfile
 import time
 
 import requests
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-from pydub import AudioSegment
+from pydub import AudioSegment  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env
 load_dotenv()
@@ -122,7 +124,9 @@ def chunk_text(text: str, max_chars: int = 2000) -> list[str]:
         chunks.append(current_chunk.strip())
 
     return chunks
-
+# https://github.com/jiaaro/pydub
+# https://github.com/jiaaro/pydub/issues/725
+# https://docs.python.org/3/library/wave.html
 
 def synthesize_audio(chunk: str, client: genai.Client) -> bytes:
     """
@@ -137,19 +141,77 @@ def synthesize_audio(chunk: str, client: genai.Client) -> bytes:
     """
     prompt = NARRATOR_PROMPT + chunk
 
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="audio/mp3"
-        ),
-    )
+    try:
+        interaction = client.interactions.create(
+            model="gemini-3.1-flash-tts-preview",
+            input=prompt,
+            response_format={"type": "audio"},
+            generation_config={
+                "speech_config": [
+                    {"voice": "Kore"}
+                ]
+            }
+        )
+    except (genai.errors.APIError, genai.errors.ClientError) as e:
+        logger.error(f"Failed to create interaction: {e}")
+        return b''
 
-    for part in response.candidates[0].content.parts:
-        if hasattr(part, "inline_data") and part.inline_data:
-            return part.inline_data.data
+    # Handle both Interaction and Stream response types
+    # The API can return either an Interaction object or a Stream of events
+    audio_data: str | None = None
 
-    raise RuntimeError("No audio data found in Gemini API response.")
+    # Check if it's a Stream (iterable) or an Interaction object
+    # Use getattr to safely check for __iter__ without mypy complaints
+    is_stream = hasattr(interaction, "__iter__") and not isinstance(interaction, (str, bytes))
+
+    if is_stream:
+        # It's a Stream - iterate through events to find the completed interaction
+        for event in interaction:  # type: ignore[union-attr]
+            # Check for InteractionCompletedEvent or similar completion events
+            event_output_audio = getattr(event, "output_audio", None)
+            if event_output_audio is not None and getattr(event_output_audio, "data", None):
+                audio_data = event_output_audio.data  # type: ignore[union-attr]
+                break
+            # Also check for InteractionCreatedEvent with output_audio
+            event_interaction = getattr(event, "interaction", None)
+            if event_interaction is not None:
+                interaction_output_audio = getattr(event_interaction, "output_audio", None)
+                if interaction_output_audio is not None and getattr(interaction_output_audio, "data", None):
+                    audio_data = interaction_output_audio.data  # type: ignore[union-attr]
+                    break
+    else:
+        # It's an Interaction object
+        interaction_output_audio = getattr(interaction, "output_audio", None)
+        if interaction_output_audio is not None and getattr(interaction_output_audio, "data", None):
+            audio_data = interaction_output_audio.data  # type: ignore[union-attr]
+
+    if not audio_data:
+        logger.warning("No audio data received from Gemini API")
+        return b''
+
+    # Decode base64 audio data
+    try:
+        return base64.b64decode(audio_data)
+    except (binascii.Error, ValueError) as e:
+        logger.error(f"Failed to decode base64 audio data: {e}")
+        return b''
+    
+
+
+
+#    response = client.models.generate_content(
+#        model="gemini-3.1-flash-tts-preview",
+#        contents=prompt,
+#        config=types.GenerateContentConfig(
+#            response_modalities=["AUDIO"],
+#        ),
+#    )
+#
+ #   for part in response.candidates[0].content.parts:
+ #       if hasattr(part, "inline_data") and part.inline_data:
+ #           return part.inline_data.data
+
+ #   raise RuntimeError("No audio data found in Gemini API response.")
 
 
 def build_audiobook(
@@ -173,38 +235,46 @@ def build_audiobook(
     client = genai.Client()
 
     if gutenberg_url:
-        print("Downloading book content...")
+        logger.info("Downloading book content...")
         book_text = fetch_text(gutenberg_url)
     elif book_file:
-        print(f"Reading book from file: {book_file}...")
+        logger.info(f"Reading book from file: {book_file}...")
         book_text = fetch_text_from_file(book_file)
     else:
         default_file = "assets/default_book.txt"
-        print(f"No source specified, using default file: {default_file}...")
+        logger.info(f"No source specified, using default file: {default_file}...")
         book_text = fetch_text_from_file(default_file)
 
     chunks = chunk_text(book_text, max_chars=max_chars)
-    print(f"Split text into {len(chunks)} chunks.")
+    logger.info(f"Split text into {len(chunks)} chunks.")
 
     final_audio = AudioSegment.empty()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for i, chunk in enumerate(chunks):
-            print(f"Synthesizing chunk {i + 1}/{len(chunks)}...")
+    for i, chunk in enumerate(chunks):
+        # TODO: Use logging and get the timestamp as a bonus
+        logger.info(f"Synthesizing chunk {i + 1}/{len(chunks)}...")
 
-            audio_bytes = synthesize_audio(chunk, client)
+        audio_bytes = synthesize_audio(chunk, client)
 
-            temp_chunk_path = os.path.join(tmpdir, f"chunk_{i}.mp3")
-            with open(temp_chunk_path, "wb") as f:
-                f.write(audio_bytes)
+        chunk_segment = AudioSegment(
+            # raw audio data (bytes)
+            data=audio_bytes,
 
-            chunk_segment = AudioSegment.from_file(temp_chunk_path, format="mp3")
-            final_audio += chunk_segment
+            # 2 byte (16 bit) samples
+            sample_width=2,
 
-            time.sleep(1)  # Respect rate limits between calls
+            # 24 kHz frame rate (Gemini TTS output)
+            frame_rate=24000,
+
+            # mono
+            channels=1
+        )
+        final_audio += chunk_segment
+
+        time.sleep(1)  # Respect rate limits between calls
 
     final_audio.export(output_filename, format="mp3")
-    print(f"Audiobook saved successfully as {output_filename}")
+    logger.info(f"Audiobook saved successfully as {output_filename}")
 
 
 def main() -> None:
