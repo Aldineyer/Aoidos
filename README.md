@@ -2,9 +2,11 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](https://www.python.org/)
 [![Gemini API](https://img.shields.io/badge/Gemini%20API-3.1%20Flash%20TTS-brightgreen?logo=google)](https://ai.google.dev/)
+[![Edge TTS](https://img.shields.io/badge/Edge%20TTS-Microsoft-blue?logo=microsoft)](https://github.com/rany2/edge-tts)
+[![Piper TTS](https://img.shields.io/badge/Piper%20TTS-Local-green?logo=raspberrypi)](https://github.com/rhasspy/piper)
 [![License](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
-**Gutenberg Storyteller** is a Python tool that automatically converts [Project Gutenberg](https://www.gutenberg.org/) ebooks into narrated audiobooks. It fetches a book's raw text, cleans it, splits it into manageable chunks, synthesizes speech using the **Gemini TTS API** (`gemini-3.1-flash-tts-preview`), and stitches the resulting audio segments into a single MP3 file.
+**Gutenberg Storyteller** is a Python tool that automatically converts [Project Gutenberg](https://www.gutenberg.org/) ebooks into narrated audiobooks. It fetches a book's raw text, cleans it, splits it into manageable chunks, synthesizes speech using multiple TTS engines (**Gemini TTS**, **Microsoft Edge TTS**, or **Piper TTS**), and stitches the resulting audio segments into a single MP3 file.
 
 ---
 
@@ -36,10 +38,24 @@ The tool implements a **four-stage pipeline**:
 |-------|-------------|
 | **1. Fetch & Clean** | Downloads the raw `.txt` file from a Project Gutenberg URL **or** reads a local `.txt` file, then strips standardized metadata headers/footers. |
 | **2. Chunk** | Splits the cleaned text along paragraph boundaries into segments of ~1,500–2,500 characters to stay within API token limits. |
-| **3. Synthesize** | Sends each chunk to the Gemini TTS API (`gemini-3.1-flash-tts-preview`) with a narrator-style prompt and retrieves raw PCM audio. |
+| **3. Synthesize** | Sends each chunk to the selected TTS engine (**Gemini TTS**, **Microsoft Edge TTS**, or **Piper TTS**) with a narrator-style prompt and retrieves raw PCM audio. |
 | **4. Stitch** | Concatenates all audio segments sequentially into a single output file using `pydub`. |
 
 ---
+
+### Supported TTS Engines
+
+| Engine | Type | Quality | Latency | Offline | Cost |
+|--------|------|---------|---------|---------|------|
+| **Gemini TTS** | Cloud (Google) | Excellent | Low | No | Free tier |
+| **Microsoft Edge TTS** | Cloud (Microsoft) | Excellent | Very Low | No | Free |
+| **Piper TTS** | Local (CPU) | Good | Very Low | Yes | Free |
+
+**Gemini TTS** (`gemini-3.1-flash-tts-preview`) — Google's high-quality neural TTS with 30+ voices. Requires API key.
+
+**Microsoft Edge TTS** — Microsoft's neural voices via Edge browser backend. No API key required, 400+ voices across 140+ locales.
+
+**Piper TTS** — Fast, lightweight local TTS optimized for CPU. Runs completely offline, ideal for privacy-sensitive use cases. Requires downloading model files (`.onnx` + `.onnx.json`).
 
 ## Architecture
 
@@ -93,9 +109,21 @@ Before running the tool, ensure you have the following:
   ffmpeg -version
   ```
 
-### API Access
+### Engine-Specific Requirements
 
+#### Gemini TTS (default)
 - **Google Gemini API Key** — You need a valid API key from [Google AI Studio](https://aistudio.google.com/apikey). The key must have access to the `gemini-3.1-flash-tts-preview` model with audio generation capabilities.
+
+#### Microsoft Edge TTS
+- **No API key required** — Uses Microsoft's public Edge TTS endpoint.
+- **Internet connection** required.
+- Optional: Install `edge-tts` extra: `uv sync --extra edge-tts`
+
+#### Piper TTS
+- **Piper binary** — Download from [rhasspy/piper releases](https://github.com/rhasspy/piper/releases) for your platform.
+- **Voice model files** — Download `.onnx` and `.onnx.json` files from [Piper voices](https://github.com/rhasspy/piper/blob/master/VOICES.md).
+- **Fully offline** — No internet connection required after setup.
+- Place binary and model files in your project directory (e.g., `./piper/`).
 
 ---
 
@@ -121,10 +149,29 @@ Before running the tool, ensure you have the following:
 3. **Install Python dependencies:**
 
    ```bash
+   # Core dependencies (Gemini TTS only)
    uv sync
+
+   # With Edge TTS support
+   uv sync --extra edge-tts
+
+   # With all optional dependencies
+   uv sync --extra all
    ```
 
    This creates a `.venv/` directory and installs all dependencies listed in `pyproject.toml`.
+
+4. **For Piper TTS (optional):**
+   - Download the Piper binary for your platform from [rhasspy/piper releases](https://github.com/rhasspy/piper/releases)
+   - Download voice model files (`.onnx` + `.onnx.json`) from [Piper voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)
+   - Place them in a `piper/` directory in your project:
+     ```
+     gutenberg-storyteller/
+     ├── piper/
+     │   ├── piper.exe (or piper on Linux/macOS)
+     │   ├── en_US-lessac-medium.onnx
+     │   └── en_US-lessac-medium.onnx.json
+     ```
 
 ---
 
@@ -136,7 +183,7 @@ Before running the tool, ensure you have the following:
    cp .env.example .env
    ```
 
-2. **Edit `.env` and add your Gemini API key:**
+2. **Edit `.env` and add your Gemini API key (required for Gemini TTS only):**
 
    ```env
    GOOGLE_API_KEY=your_api_key_here
@@ -146,29 +193,47 @@ Before running the tool, ensure you have the following:
 
 > **Tip:** Never commit your `.env` file to version control. It is listed in `.gitignore` by default.
 
+### Engine-Specific Configuration
+
+#### Microsoft Edge TTS
+No configuration required. Optionally set default voice via `--voice` argument.
+
+#### Piper TTS
+Configure via CLI arguments:
+- `--piper-model`: Path to `.onnx` model file (required)
+- `--piper-exe`: Path to Piper binary (auto-detected if in PATH or `./piper/`)
+- `--piper-sample-rate`: Model sample rate (default: 24000)
+
 ---
 
 ## Usage
 
-### Basic Example
+### Basic Example (Python API)
 
 ```python
-from narrator import build_audiobook
+from narrator import build_audiobook, create_tts_engine
 
-# Generate an audiobook from a Project Gutenberg URL
+# Gemini TTS (default, requires GOOGLE_API_KEY)
 build_audiobook(
     gutenberg_url="https://www.gutenberg.org/files/11/11-0.txt",
     output_filename="alice_in_wonderland.mp3"
 )
 
-# Generate an audiobook from a local text file
+# Microsoft Edge TTS (no API key required)
+edge_engine = create_tts_engine("edge", voice="en-US-AvaNeural")
 build_audiobook(
-    book_file="assets/default_book.txt",
-    output_filename="cthulhu.mp3"
+    gutenberg_url="https://www.gutenberg.org/files/11/11-0.txt",
+    output_filename="alice_in_wonderland.mp3",
+    tts_engine=edge_engine
 )
 
-# No source specified — uses assets/default_book.txt
-build_audiobook(output_filename="default.mp3")
+# Piper TTS (fully offline, requires model files)
+piper_engine = create_tts_engine("piper", model_path="./piper/en_US-lessac-medium.onnx")
+build_audiobook(
+    book_file="assets/default_book.txt",
+    output_filename="cthulhu.mp3",
+    tts_engine=piper_engine
+)
 ```
 
 ### Customizing Chunk Size
@@ -187,6 +252,7 @@ build_audiobook(
 
 You can also run the script directly from the command line. Either `--url` or `--file` may be specified, but not both. If neither is given, the default book at `assets/default_book.txt` is used.
 
+#### Gemini TTS (default)
 ```bash
 # From a Project Gutenberg URL
 python narrator.py \
@@ -198,8 +264,52 @@ python narrator.py \
     --file "assets/default_book.txt" \
     --output "cthulhu.mp3"
 
-# No source specified — uses assets/default_book.txt
-python narrator.py --output "default.mp3"
+# With custom voice
+python narrator.py \
+    --url "https://www.gutenberg.org/files/11/11-0.txt" \
+    --output "alice.mp3" \
+    --voice "Kore"
+```
+
+#### Microsoft Edge TTS
+```bash
+# Basic usage (no API key needed)
+python narrator.py \
+    --url "https://www.gutenberg.org/files/11/11-0.txt" \
+    --output "alice.mp3" \
+    --tts-engine edge
+
+# With custom voice (see https://github.com/rany2/edge-tts for full list)
+python narrator.py \
+    --file "assets/default_book.txt" \
+    --output "cthulhu.mp3" \
+    --tts-engine edge \
+    --voice "en-US-AndrewNeural"
+
+# Swedish voice example
+python narrator.py \
+    --url "https://www.gutenberg.org/files/11/11-0.txt" \
+    --output "alice_sv.mp3" \
+    --tts-engine edge \
+    --voice "sv-SE-SofieNeural"
+```
+
+#### Piper TTS (Offline)
+```bash
+# Basic usage (requires model files)
+python narrator.py \
+    --file "assets/default_book.txt" \
+    --output "cthulhu.mp3" \
+    --tts-engine piper \
+    --piper-model ./piper/en_US-lessac-medium.onnx
+
+# With custom Piper binary location
+python narrator.py \
+    --url "https://www.gutenberg.org/files/11/11-0.txt" \
+    --output "alice.mp3" \
+    --tts-engine piper \
+    --piper-model ./piper/en_US-amy-medium.onnx \
+    --piper-exe ./piper/piper
 ```
 
 ---
@@ -259,38 +369,41 @@ def chunk_text(text: str, max_chars: int = 2000) -> list[str]:
     return chunks
 ```
 
-### 3. Synthesize Audio via Gemini TTS API
+### 3. Synthesize Audio via TTS Engine
 
-The `synthesize_audio()` function sends each text chunk to the Gemini TTS API using the `google-genai` SDK's `interactions.create()` method. A **system prompt** guides the narrator's tone:
+The tool uses a pluggable TTS engine architecture. Each engine implements a common interface (`TTSEngine`) with a `synthesize(text: str) -> bytes` method that returns raw PCM audio.
 
-> *"Read the following book excerpt aloud clearly, at a measured pace, and with expressive tone like an audiobook narrator."*
-
-The API is configured to return audio by setting `response_format={"type": "audio"}` and specifying a voice via `generation_config`.
+#### Gemini TTS Engine
+Uses Google's `gemini-3.1-flash-tts-preview` model via the `google-genai` SDK.
 
 ```python
-def synthesize_audio(chunk: str, client: genai.Client) -> bytes:
-    """Synthesize speech for a text chunk using the Gemini TTS API."""
-    prompt = NARRATOR_PROMPT + chunk
+from narrator import create_tts_engine
 
-    interaction = client.interactions.create(
-        model="gemini-3.1-flash-tts-preview",
-        input=prompt,
-        response_format={"type": "audio"},
-        generation_config={
-            "speech_config": [
-                {"voice": "Algenib"}
-            ]
-        }
-    )
-
-    # Extract base64 audio data from the interaction
-    audio_data = interaction.output_audio.data
-
-    # Decode base64 audio data
-    return base64.b64decode(audio_data)
+engine = create_tts_engine("gemini", voice="Algenib")
+audio_bytes = engine.synthesize("Hello, world!")
 ```
 
-The API returns **raw PCM audio** (16-bit, 24 kHz, mono), which is decoded from base64 and returned as bytes.
+#### Microsoft Edge TTS Engine
+Uses the `edge-tts` library to stream audio from Microsoft's Edge TTS service.
+
+```python
+from narrator import create_tts_engine
+
+engine = create_tts_engine("edge", voice="en-US-AvaNeural")
+audio_bytes = engine.synthesize("Hello, world!")
+```
+
+#### Piper TTS Engine
+Uses the local Piper binary via subprocess for fully offline synthesis.
+
+```python
+from narrator import create_tts_engine
+
+engine = create_tts_engine("piper", model_path="./piper/en_US-lessac-medium.onnx")
+audio_bytes = engine.synthesize("Hello, world!")
+```
+
+All engines return **raw PCM audio** (16-bit, mono) at their respective sample rates (24 kHz for Gemini/Edge, model-dependent for Piper).
 
 ### 4. Stitch Audio Files
 
@@ -628,17 +741,42 @@ Ensure `ffmpeg` is installed and available on your system `PATH` (see [Prerequis
 
 ### Voice Customization
 
-You can configure specific voice parameters inside `generation_config` using `speech_config` attributes. This allows targeting specific standard voices available in [Google AI Studio](https://aistudio.google.com/):
+Each TTS engine supports different voices:
+
+#### Gemini TTS Voices
+Configure via `--voice` argument or `voice` parameter in `create_tts_engine()`:
 
 ```python
-generation_config={
-    "speech_config": [
-        {"voice": "Kore"}  # or any of the 30 available voices
-    ]
-}
+engine = create_tts_engine("gemini", voice="Kore")
 ```
 
-Available voices include: **Zephyr** (Bright), **Puck** (Upbeat), **Charon** (Informative), **Kore** (Firm), **Fenrir** (Excitable), **Leda** (Youthful), **Orus** (Firm), **Aoede** (Breezy), **Callirrhoe** (Easy-going), **Autonoe** (Bright), **Enceladus** (Breathy), **Iapetus** (Clear), **Umbriel** (Easy-going), **Algieba** (Smooth), **Despina** (Smooth), **Erinome** (Clear), **Algenib** (Gravelly), **Rasalgethi** (Informative), **Laomedeia** (Upbeat), **Achernar** (Soft), **Alnilam** (Firm), **Schedar** (Even), **Gacrux** (Mature), **Pulcherrima** (Forward), **Achird** (Friendly), **Zubenelgenubi** (Casual), **Vindemiatrix** (Gentle), **Sadachbia** (Lively), **Sadaltager** (Knowledgeable), **Sulafat** (Warm).
+Available voices (30+): **Zephyr** (Bright), **Puck** (Upbeat), **Charon** (Informative), **Kore** (Firm), **Fenrir** (Excitable), **Leda** (Youthful), **Orus** (Firm), **Aoede** (Breezy), **Callirrhoe** (Easy-going), **Autonoe** (Bright), **Enceladus** (Breathy), **Iapetus** (Clear), **Umbriel** (Easy-going), **Algieba** (Smooth), **Despina** (Smooth), **Erinome** (Clear), **Algenib** (Gravelly), **Rasalgethi** (Informative), **Laomedeia** (Upbeat), **Achernar** (Soft), **Alnilam** (Firm), **Schedar** (Even), **Gacrux** (Mature), **Pulcherrima** (Forward), **Achird** (Friendly), **Zubenelgenubi** (Casual), **Vindemiatrix** (Gentle), **Sadachbia** (Lively), **Sadaltager** (Knowledgeable), **Sulafat** (Warm).
+
+#### Microsoft Edge TTS Voices
+Configure via `--voice` argument (400+ voices across 140+ locales):
+
+```python
+engine = create_tts_engine("edge", voice="en-US-AndrewNeural")
+```
+
+Popular voices:
+- **English (US)**: `en-US-AvaNeural` (female, default), `en-US-AndrewNeural` (male), `en-US-BrianNeural` (male), `en-US-EmmaNeural` (female)
+- **English (UK)**: `en-GB-LibbyNeural` (female), `en-GB-RyanNeural` (male)
+- **Swedish**: `sv-SE-SofieNeural` (female), `sv-SE-MattiasNeural` (male)
+- **Full list**: Run `edge-tts --list-voices` or see [Edge TTS voices](https://github.com/rany2/edge-tts/blob/master/VOICES.md)
+
+#### Piper TTS Voices
+Configure by downloading the appropriate `.onnx` model file:
+
+```python
+engine = create_tts_engine("piper", model_path="./piper/en_US-amy-medium.onnx")
+```
+
+Popular models (see [Piper Voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)):
+- **English (US)**: `en_US-lessac-medium` (male), `en_US-amy-medium` (female), `en_US-ryan-high` (male, high quality)
+- **English (UK)**: `en_GB-alba-medium` (female), `en_GB-john-medium` (male)
+- **Swedish**: `sv_SE-ilsa-medium` (female), `sv_SE-nst-medium` (male)
+- Quality tiers: `low` (fast, smaller), `medium` (balanced), `high` (best quality, larger)
 
 ### Error Recovery & Caching
 
@@ -683,6 +821,14 @@ The tool includes a `time.sleep(1)` between API calls to respect rate limits. Fo
 | Audio is silent or distorted | Check that the chunk size is within API limits; reduce `max_chars` |
 | `interaction.output_audio.data` is empty | The API may have returned an error; check logs for details |
 | Rate limit exceeded (`429`) | Increase the `time.sleep()` interval or implement exponential backoff |
+| `ModuleNotFoundError: No module named 'edge_tts'` | Run `uv sync --extra edge-tts` or `pip install edge-tts` |
+| `RuntimeError: edge-tts not installed` | Install Edge TTS extra: `uv sync --extra edge-tts` |
+| Edge TTS: Connection timeout / network error | Check internet connection; try again or use Piper for offline |
+| `FileNotFoundError: Piper model not found` | Verify `--piper-model` path; download model from Piper voices repo |
+| `FileNotFoundError: Piper executable not found` | Download Piper binary; place in PATH or `./piper/` directory |
+| `FileNotFoundError: Piper config not found` | Ensure `.onnx.json` config file exists alongside `.onnx` model |
+| Piper: Audio sounds wrong pitch/speed | Check `--piper-sample-rate` matches model (usually 22050 or 24000) |
+| Piper: Synthesis fails with non-zero exit code | Check stderr output; verify model compatibility with Piper version |
 
 ---
 
